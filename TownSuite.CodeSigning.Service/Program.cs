@@ -11,10 +11,10 @@ using Microsoft.Extensions.Logging;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddHealthChecks();
-builder.Services.AddSingleton<Settings>(s => builder.Configuration.GetSection("Settings").Get<Settings>());
+builder.Services.AddSingleton<Settings>(s => builder.Configuration.GetSection("Settings").Get<Settings>()!);
 builder.WebHost.UseKestrel(o =>
 {
-    var settings = builder.Configuration.GetSection("Settings").Get<Settings>();
+    var settings = builder.Configuration.GetSection("Settings").Get<Settings>()!;
     o.Limits.MaxRequestBodySize = settings.MaxRequestBodySize;
 });
 
@@ -68,7 +68,7 @@ app.UseExceptionHandler(exceptionHandlerApp
 app.MapPost("/sign", async (HttpRequest request, Settings settings, ILogger logger) =>
 {
     // Obsolete, only kept in place for backwards compatibility
-
+    bool isDetachedSigning = IsDetachedSigningRequest(request);
     var workingFilePath = new FileInfo(Path.Combine(BatchedSigning.GetTempFolder(), Guid.NewGuid().ToString()));
     try
     {
@@ -102,7 +102,8 @@ app.MapPost("/sign", async (HttpRequest request, Settings settings, ILogger logg
 });
 app.MapPost("/sign/batch", async (HttpRequest request, Settings settings, ILogger logger) =>
 {
-    return await BatchedSigning.Sign(request.Body, settings, logger);
+    bool isDetachedSigning = IsDetachedSigningRequest(request);
+    return await BatchedSigning.Sign(request.Body, settings, logger, isDetachedSigning);
 });
 
 app.MapGet("/sign/batch", async (ILogger logger, string id) =>
@@ -198,4 +199,9 @@ static Assembly CurrentDomain_AssemblyResolve(object sender, ResolveEventArgs ar
         return Assembly.LoadFrom(assemblyPath);
     }
     return null;
+}
+
+static bool IsDetachedSigningRequest(HttpRequest request)
+{
+    return request.Headers.TryGetValue("X-DETACHED-SIGNING", out var detachedHeader) && detachedHeader == "indeed";
 }

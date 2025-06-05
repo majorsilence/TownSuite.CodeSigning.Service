@@ -11,7 +11,7 @@ namespace TownSuite.CodeSigning.Service
             return Path.Combine(Path.GetTempPath(), "townsuite", "codesigning");
         }
 
-        public static async Task<IResult> Sign(Stream body, Settings settings, ILogger logger)
+        public static async Task<IResult> Sign(Stream body, Settings settings, ILogger logger, bool isDetachedSigning)
         {
             string id = Guid.NewGuid().ToString();
 
@@ -28,6 +28,9 @@ namespace TownSuite.CodeSigning.Service
                 {
                     await body.CopyToAsync(fileStream);
                 }
+
+                // how to determine if this is just a hash file needs to be signed or a full file?
+
 
                 BackgroundQueue.Instance.QueueThread(async () =>
                 {

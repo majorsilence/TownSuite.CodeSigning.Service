@@ -13,6 +13,8 @@ bool quickFail = false;
 bool ignoreFailures = false;
 int timeoutInMs = 10000;
 int batchTimeoutInSeconds = 1200;
+bool detachedSignature = false;
+DetachedSignatureArgs signToolArgs = new DetachedSignatureArgs();
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -62,6 +64,18 @@ for (int i = 0; i < args.Length; i++)
         {
             Console.WriteLine($"-batchtimeout value failed to parse.  defaulting to {batchTimeoutInSeconds}");
         }
+    }
+    else if (string.Equals(args[i], "-detachedsignature", StringComparison.InvariantCultureIgnoreCase))
+    {
+        detachedSignature = true;
+    }
+    else if (string.Equals(args[i], "-signtool", StringComparison.InvariantCultureIgnoreCase))
+    {
+        signToolArgs.SigntoolPath = args[i + 1];
+    }
+    else if (string.Equals(args[i], "-signtool-detached-args", StringComparison.InvariantCultureIgnoreCase))
+    {
+        signToolArgs.SigntoolDetachedArgs = args[i + 1];
     }
     else if (string.Equals(args[i], "-help", StringComparison.InvariantCultureIgnoreCase)
              || string.Equals(args[i], "--help", StringComparison.InvariantCultureIgnoreCase)
@@ -158,9 +172,22 @@ void PrintHelp()
     Console.WriteLine("    The total time permitted for the whole batch");
     Console.WriteLine("    If not set the default is 1200 seconds.");
     Console.WriteLine("");
+    Console.WriteLine("-detachedsignature");
+    Console.WriteLine("    If this is set the program will " + Environment.NewLine +
+        "        1. create the hash locally," + Environment.NewLine +
+        "        2. send it to the server which will sign the hash, " + Environment.NewLine +
+        "        3. and download the signed hash and apply it to the file." + Environment.NewLine+
+        "        4. requires signtool to be available and a signtool template arg be passed in");
+    Console.WriteLine("");
+    Console.WriteLine("    -signtool \"path to signtool.exe\"");
+    Console.WriteLine("");
+    Console.WriteLine("    -signtool-detached-args \"sign /as /fd sha256 /p7s \"{HashFilePath}\" /tr http://timestamp.digicert.com /td sha256 \"{AssemblyFilePath}\"\"");
+    Console.WriteLine("        signtool arguments to apply signed hash to file");
+    Console.WriteLine("");
+    Console.WriteLine("");
     Console.WriteLine("Example");
     Console.WriteLine(
-        ".\\TownSuite.CodeSigning.Client.exe -file \"C:\\some\file.dll\" -url \"https://localhost:5000/sign\" -token \"the token\"");
+        ".\\TownSuite.CodeSigning.Client.exe -file \"C:\\some\\file.dll\" -url \"https://localhost:5000/sign\" -token \"the token\"");
 }
 
 
@@ -168,7 +195,21 @@ async Task<bool> ProcessFiles(string[] filepaths, string url, bool quickFail, bo
 {
     List<string> files = FileHelpers.CreateFileList(filepaths, folder);
 
-    var signer = new SigningClient(client, url);
+    SigningClient signer;
+    if (detachedSignature)
+    {
+        if (string.IsNullOrWhiteSpace(signToolArgs.SigntoolPath) || string.IsNullOrWhiteSpace(signToolArgs.SigntoolDetachedArgs))
+        {
+            Console.WriteLine("When using detached signature you must specify the signtool path and the signtool detached args.");
+            PrintHelp();
+            Environment.Exit(-1);
+        }
+        signer = new SigningClientDetached(client, url, signToolArgs);
+    }
+    else
+    {
+        signer = new SigningClient(client, url);
+    }
 
     bool signingServiceIsOnline = await signer.HealthCheck();
     if (!signingServiceIsOnline)
@@ -181,7 +222,7 @@ async Task<bool> ProcessFiles(string[] filepaths, string url, bool quickFail, bo
     {
         foreach (var result in uploadFailures)
         {
-            Console.WriteLine($"Failed to sign file: {result.FailedFile}");
+            Console.WriteLine($"Failed to upload/sign file: {result.FailedFile}");
             Console.WriteLine(result.Message);
         }
         return true;
@@ -192,7 +233,7 @@ async Task<bool> ProcessFiles(string[] filepaths, string url, bool quickFail, bo
     {
         foreach (var result in downloadResults)
         {
-            Console.WriteLine($"Failed to download file: {result.FailedFile}");
+            Console.WriteLine($"Failed to download/sign file: {result.FailedFile}");
             Console.WriteLine(result.Message);
         }
         return true;

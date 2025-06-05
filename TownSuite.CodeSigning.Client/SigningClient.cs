@@ -21,7 +21,7 @@ namespace TownSuite.CodeSigning.Client
         private List<(string Id, string FilePath)> TrackedFiles = new();
 
 
-        public async Task<(string FailedFile, string Message)[]> UploadFiles(bool quickFail, bool ignoreFailures,
+        public virtual async Task<(string FailedFile, string Message)[]> UploadFiles(bool quickFail, bool ignoreFailures,
             string[] filepaths)
         {
             var failedUploads = new List<(string FailedFile, string Message)>();
@@ -30,7 +30,6 @@ namespace TownSuite.CodeSigning.Client
             string url = $"{urk.Scheme}://{urk.Host}:{urk.Port}/sign/batch";
             foreach (string filepath in filepaths)
             {
-                bool failures = false;
                 try
                 {
                     var isHealthy = await HealthCheck();
@@ -39,7 +38,6 @@ namespace TownSuite.CodeSigning.Client
                         failedUploads.Add((filepath, "health check failed"));
                         continue;
                     }
-
 
                     var request = new HttpRequestMessage(HttpMethod.Post, url);
                     await using var fs = File.OpenRead(filepath);
@@ -76,7 +74,7 @@ namespace TownSuite.CodeSigning.Client
             return failedUploads.ToArray();
         }
 
-        public async Task<(string FailedFile, string Message)[]> DownloadSignedFiles(bool quickFail, bool ignoreFailures,
+        public virtual async Task<(string FailedFile, string Message)[]> DownloadSignedFiles(bool quickFail, bool ignoreFailures,
             int batchTimeoutInSeconds)
         {
             var startTime = DateTime.UtcNow;
@@ -96,7 +94,7 @@ namespace TownSuite.CodeSigning.Client
                 }
                 foreach (var file in results.Failures)
                 {
-                    TrackedFiles.Remove(TrackedFiles.First(x => x.FilePath == file.FailedFile));
+                    TrackedFiles.RemoveAll(x => x.FilePath == file.FailedFile);
                 }
                 await Task.Delay(1000);
                 count++;

@@ -29,12 +29,12 @@ namespace TownSuite.CodeSigning.Service
             p.Dispose();
         }
 
-        public async Task<(bool IsSigned, string Message)> SignAsync(string currentfile)
+        public async Task<(bool IsSigned, string Message)> SignAsync(string currentfile, bool isDetached)
         {
             p = new System.Diagnostics.Process();
             p.StartInfo.FileName = _settings.SignToolPath;
 
-            p.StartInfo.Arguments = _settings.SignToolOptions.Replace("{FilePath}", currentfile);
+            p.StartInfo.Arguments = isDetached ? _settings.SignToolDetachedOptions.Replace("{FilePath}", currentfile) :   _settings.SignToolOptions.Replace("{FilePath}", currentfile);
             p.StartInfo.UseShellExecute = false;
             p.StartInfo.ErrorDialog = false;
             p.StartInfo.CreateNoWindow = true;
