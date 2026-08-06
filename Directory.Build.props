@@ -1,8 +1,8 @@
 <Project>
   <PropertyGroup>
-    <AssemblyVersion>26.10.5</AssemblyVersion>
-    <FileVersion>26.10.5</FileVersion>
-    <Version>26.10.5</Version>
+    <AssemblyVersion>26.10.6</AssemblyVersion>
+    <FileVersion>26.10.6</FileVersion>
+    <Version>26.10.6</Version>
     <Deterministic>true</Deterministic>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <Company>TownSuite Municipal Software Inc.</Company>
