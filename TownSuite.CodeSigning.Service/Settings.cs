@@ -12,9 +12,11 @@
         public int SemaphoreSlimProcessPerCpuLimit { get; init; }
 
         /// <summary>
-        /// How long (in milliseconds) a readiness signing canary result is cached before the
-        /// next probe re-runs signtool. Prevents frequent readiness probes from hammering
-        /// signtool and the timestamp server. Defaults to 30000 when unset (0 or negative).
+        /// How often (in milliseconds) the readiness signing canary re-runs signtool in the
+        /// background. Probes never run signtool themselves; they read the most recent result, so
+        /// this controls how quickly a signing failure is noticed, not how fast probes respond.
+        /// A result older than three intervals is reported as stale. Defaults to 30000 when unset
+        /// (0 or negative).
         /// </summary>
         public int HealthCheckCacheInMs { get; init; }
 

@@ -26,6 +26,8 @@ builder.WebHost.UseKestrel(o =>
     }
 });
 builder.Services.AddHostedService<CleanerService>();
+// Keeps the readiness signing canary warm so health/status probes never wait on signtool.
+builder.Services.AddHostedService<SigningCanaryService>();
 
 
 var jwtSettings = builder.Configuration.GetSection("JWT").Get<JwtSettings>();
