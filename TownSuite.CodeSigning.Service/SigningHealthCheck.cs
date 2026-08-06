@@ -4,13 +4,16 @@ using System.Reflection;
 namespace TownSuite.CodeSigning.Service
 {
     /// <summary>
-    /// Readiness health check with two signals:
+    /// Readiness health check with two signals. Both are answered from memory so probes return
+    /// immediately: nothing on this path waits on signtool, the filesystem or the network.
     ///
     /// 1. A signing canary: signs a throwaway copy of a real PE file with the configured
     ///    signtool settings. If signing fails (for example
     ///    "SignTool Error: No private key is available.") the service is reported unhealthy.
-    ///    This result is cached for a short interval so frequent probes do not hammer signtool
-    ///    and the timestamp server.
+    ///    signtool shells out and contacts the timestamp server, which takes seconds and can
+    ///    stall outright, so it is never run inside a probe request. <see cref="SigningCanaryService"/>
+    ///    calls <see cref="RefreshAsync"/> on a timer and <see cref="CheckHealthAsync"/> only
+    ///    reads the last published result.
     ///
     /// 2. A queue-drain check: batch signing runs asynchronously on <see cref="BackgroundQueue"/>,
     ///    so signtool passing the canary does not prove queued jobs are being processed. If the
@@ -19,13 +22,23 @@ namespace TownSuite.CodeSigning.Service
     /// </summary>
     public class SigningHealthCheck : IHealthCheck
     {
+        /// <summary>
+        /// A canary result older than this many refresh intervals is treated as stale: it means the
+        /// background refresher stopped running, so the last result no longer describes reality.
+        /// </summary>
+        private const int StaleAfterIntervals = 3;
+
         private readonly Settings _settings;
         private readonly ILogger _logger;
         private readonly BackgroundQueue _queue;
 
-        private readonly SemaphoreSlim _gate = new SemaphoreSlim(1, 1);
-        private DateTimeOffset _cachedAt = DateTimeOffset.MinValue;
-        private HealthCheckResult _cachedResult;
+        // Collapses overlapping refreshes; never waited on by a request thread.
+        private readonly SemaphoreSlim _refreshGate = new SemaphoreSlim(1, 1);
+
+        // Single reference swap so readers always see a result and its timestamp together.
+        private volatile CanarySnapshot _snapshot;
+
+        private sealed record CanarySnapshot(HealthCheckResult Result, DateTimeOffset CompletedAt);
 
         public SigningHealthCheck(Settings settings, ILogger logger)
             : this(settings, logger, BackgroundQueue.Instance)
@@ -39,48 +52,84 @@ namespace TownSuite.CodeSigning.Service
             _queue = queue;
         }
 
-        private TimeSpan CacheDuration =>
+        /// <summary>
+        /// How often the background canary re-runs signtool.
+        /// </summary>
+        public TimeSpan RefreshInterval =>
             TimeSpan.FromMilliseconds(_settings.HealthCheckCacheInMs > 0 ? _settings.HealthCheckCacheInMs : 30000);
+
+        private TimeSpan StaleAfter => RefreshInterval * StaleAfterIntervals;
 
         private TimeSpan QueueStallWindow =>
             TimeSpan.FromMilliseconds(_settings.HealthCheckQueueStallInMs > 0 ? _settings.HealthCheckQueueStallInMs : 60000);
 
-        public async Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context,
+        /// <summary>
+        /// Returns the current readiness verdict without blocking. Deliberately synchronous work
+        /// only — see the class remarks.
+        /// </summary>
+        public Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context,
             CancellationToken cancellationToken = default)
         {
-            // Cheap, live signal first: is the async signing queue actually draining?
             var queueResult = CheckQueueDraining();
             if (queueResult.Status == HealthStatus.Unhealthy)
             {
-                return queueResult;
+                return Task.FromResult(queueResult);
             }
 
-            var now = DateTimeOffset.UtcNow;
-            if (_cachedResult.Status != HealthStatus.Unhealthy && now - _cachedAt < CacheDuration
-                && _cachedAt != DateTimeOffset.MinValue)
+            return Task.FromResult(ReadCanaryResult());
+        }
+
+        /// <summary>
+        /// Runs the signing canary and publishes the result for <see cref="CheckHealthAsync"/> to
+        /// read. Called on a timer by <see cref="SigningCanaryService"/>, and directly by tests.
+        /// If a run is already in progress this returns immediately rather than queueing behind it.
+        /// </summary>
+        public async Task RefreshAsync(CancellationToken cancellationToken = default)
+        {
+            if (!await _refreshGate.WaitAsync(0, cancellationToken))
             {
-                return _cachedResult;
+                return;
             }
 
-            await _gate.WaitAsync(cancellationToken);
             try
             {
-                // Re-check the cache after acquiring the gate in case another probe just refreshed it.
-                now = DateTimeOffset.UtcNow;
-                if (_cachedResult.Status != HealthStatus.Unhealthy && now - _cachedAt < CacheDuration
-                    && _cachedAt != DateTimeOffset.MinValue)
-                {
-                    return _cachedResult;
-                }
-
-                _cachedResult = await RunSignCanaryAsync();
-                _cachedAt = DateTimeOffset.UtcNow;
-                return _cachedResult;
+                var result = await RunSignCanaryAsync();
+                _snapshot = new CanarySnapshot(result, DateTimeOffset.UtcNow);
             }
             finally
             {
-                _gate.Release();
+                _refreshGate.Release();
             }
+        }
+
+        private HealthCheckResult ReadCanaryResult()
+        {
+            var snapshot = _snapshot;
+            if (snapshot == null)
+            {
+                // Degraded rather than Unhealthy: a probe that lands before the first canary run
+                // finishes should not fail the container during startup. Degraded still returns 200.
+                return HealthCheckResult.Degraded("Code signing canary has not completed a run yet.");
+            }
+
+            // A failing canary stays failing until a later run says otherwise.
+            if (snapshot.Result.Status == HealthStatus.Unhealthy)
+            {
+                return snapshot.Result;
+            }
+
+            var age = DateTimeOffset.UtcNow - snapshot.CompletedAt;
+            if (age > StaleAfter)
+            {
+                var message =
+                    $"Code signing canary result is stale: {age.TotalSeconds:n0}s old, " +
+                    $"refresh interval {RefreshInterval.TotalSeconds:n0}s. " +
+                    $"Last known result: {snapshot.Result.Description}";
+                _logger.LogError(message);
+                return HealthCheckResult.Degraded(message);
+            }
+
+            return snapshot.Result;
         }
 
         private HealthCheckResult CheckQueueDraining()

@@ -128,6 +128,28 @@ Notes:
 - Duplicate zip content across multiple folders is deduplicated by the client; signatures are created once and copied to duplicates.
 
 
+# Health endpoints
+
+| Endpoint | Checks | Use for |
+|---|---|---|
+| `/health/live` | Process is up and answering. | Liveness probe — restart the container when this fails. |
+| `/health/ready` | Signing canary + signing queue is draining. | Readiness probe — pull the instance out of rotation when this fails. |
+| `/healthz` | Both of the above. | Backwards compatible; kept for existing monitors. |
+
+All three respond immediately. They read state from memory and never invoke `signtool`, touch the
+filesystem, or call the timestamp server on the request path.
+
+The readiness signing canary — which signs a throwaway PE file to prove the private key is still
+usable — runs on a background timer instead, because `signtool` contacts the timestamp server and
+takes seconds (up to `SigntoolTimeoutInMs`) or stalls outright. `HealthCheckCacheInMs` sets that
+refresh interval (default 30s), so it controls how quickly a signing failure is *noticed*, not how
+fast probes respond. Two consequences worth knowing:
+
+- Before the first canary run finishes, readiness reports `Degraded` (HTTP 200) rather than failing
+  a container that is merely still starting.
+- If the canary result goes older than three refresh intervals the refresher has stopped, so
+  readiness reports `Degraded` with a staleness message instead of a stale `Healthy`.
+
 # Admin status dashboard
 
 A browser dashboard is available at `/admin/` showing service uptime/version, signing queue depth/in-flight/completed/failed counts, worker health, concurrency slots, configured certificate expiry, and pending batch job folders. It polls `GET /admin/status`, which returns the same data as JSON for monitoring tools:

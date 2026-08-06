@@ -19,7 +19,7 @@ namespace TownSuite.CodeSigning.Service
 
         public async Task<(bool IsSigned, string Message)> SignAsync(string workingDir, string[] files)
         {
-            var _cancellationToken = new CancellationTokenSource(_settings.SigntoolTimeoutInMs * files.Length).Token;
+            using var timeout = new CancellationTokenSource(_settings.SigntoolTimeoutInMs * files.Length);
 
             using var p = new System.Diagnostics.Process();
             p.StartInfo.FileName = _settings.SignToolPath;
@@ -54,14 +54,19 @@ namespace TownSuite.CodeSigning.Service
             p.BeginOutputReadLine();
 
 
-            await p.WaitForExitAsync(_cancellationToken);
-            if (_cancellationToken.IsCancellationRequested)
+            try
             {
+                await p.WaitForExitAsync(timeout.Token);
+            }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+            {
+                // WaitForExitAsync throws on cancellation, so the kill has to happen here.
+                // Without it a wedged signtool is left running and its handles leak.
                 msg.AppendLine("signtool timeout reached. Cancelling code signing attempt.");
                 _logger.LogWarning(msg.ToString());
                 try
                 {
-                    p.Kill();
+                    p.Kill(entireProcessTree: true);
                 }
                 catch (Exception ex)
                 {
