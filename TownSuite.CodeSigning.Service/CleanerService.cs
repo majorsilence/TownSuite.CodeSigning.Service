@@ -23,6 +23,17 @@ namespace TownSuite.CodeSigning.Service
             DateTime currentTime = DateTime.Now;
             foreach (var folder in folders)
             {
+                // The readiness canary's folder is long lived and reused by every run, so it is
+                // always older than the cutoff. Deleting it races with an in-flight canary and
+                // logged a delete failure every pass. Sweep stale files out of it instead, so a
+                // canary that failed to clean up after itself cannot accumulate forever.
+                if (string.Equals(folder.Name, SigningHealthCheck.CanaryFolderName,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    CleanupOldFiles(folder, currentTime);
+                    continue;
+                }
+
                 TimeSpan age = currentTime - folder.CreationTime;
                 if (age.TotalHours > 1)
                 {
@@ -38,6 +49,27 @@ namespace TownSuite.CodeSigning.Service
                 }
             }
 
+        }
+
+        // Deletes files more than 1 hour old while leaving the folder itself in place.
+        static void CleanupOldFiles(DirectoryInfo folder, DateTime currentTime)
+        {
+            foreach (var file in folder.GetFiles())
+            {
+                if ((currentTime - file.CreationTime).TotalHours <= 1)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    file.Delete();
+                }
+                catch (Exception)
+                {
+                    Console.Error.WriteLine($"Failed to delete file {file.FullName} and will try again later");
+                }
+            }
         }
     }
 }

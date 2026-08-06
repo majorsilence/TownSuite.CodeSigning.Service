@@ -8,13 +8,35 @@ namespace TownSuite.CodeSigning.Service
     public class Signer : ISigner
     {
         readonly Settings _settings;
-        StringBuilder msg = new StringBuilder();
+        readonly StringBuilder msg = new StringBuilder();
+
+        // signtool's stdout and stderr are drained on two separate threadpool threads, so every
+        // touch of msg has to be synchronized. StringBuilder is not thread-safe: concurrent
+        // appends corrupt its internal chunk list and throw "Destination is too short" out of
+        // AsyncStreamReader, which rethrows on a threadpool thread and takes the process down.
+        readonly object _msgLock = new object();
 
         readonly ILogger _logger;
         public Signer(Settings settings, ILogger logger)
         {
             _settings = settings;
             _logger = logger;
+        }
+
+        private void AppendMessage(string line)
+        {
+            lock (_msgLock)
+            {
+                msg.AppendLine(line);
+            }
+        }
+
+        private string MessageSnapshot()
+        {
+            lock (_msgLock)
+            {
+                return msg.ToString();
+            }
         }
 
         public async Task<(bool IsSigned, string Message)> SignAsync(string workingDir, string[] files)
@@ -62,8 +84,8 @@ namespace TownSuite.CodeSigning.Service
             {
                 // WaitForExitAsync throws on cancellation, so the kill has to happen here.
                 // Without it a wedged signtool is left running and its handles leak.
-                msg.AppendLine("signtool timeout reached. Cancelling code signing attempt.");
-                _logger.LogWarning(msg.ToString());
+                AppendMessage("signtool timeout reached. Cancelling code signing attempt.");
+                _logger.LogWarning(MessageSnapshot());
                 try
                 {
                     p.Kill(entireProcessTree: true);
@@ -73,12 +95,13 @@ namespace TownSuite.CodeSigning.Service
                     _logger.LogWarning(ex, "signtool process exit failure");
                 }
 
-                return (false, msg.ToString());
+                return (false, MessageSnapshot());
             }
 
-            _logger.LogInformation($"SignToolInternal ExitCode: {p.ExitCode}, Message: {msg.ToString()}");
+            var output = MessageSnapshot();
+            _logger.LogInformation($"SignToolInternal ExitCode: {p.ExitCode}, Message: {output}");
 
-            return (p.ExitCode == 0, msg.ToString());
+            return (p.ExitCode == 0, output);
         }
 
         public string GetFileName(string id)
@@ -90,7 +113,7 @@ namespace TownSuite.CodeSigning.Service
         {
             if (e.Data != null)
             {
-                msg.AppendLine($"SignToolInternal StandardError: {e.Data}");
+                AppendMessage($"SignToolInternal StandardError: {e.Data}");
             }
         }
 
@@ -98,7 +121,7 @@ namespace TownSuite.CodeSigning.Service
         {
             if (e.Data != null)
             {
-                msg.AppendLine($"SignToolInternal StandardOutput: {e.Data}");
+                AppendMessage($"SignToolInternal StandardOutput: {e.Data}");
             }
         }
 

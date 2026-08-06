@@ -9,7 +9,13 @@ namespace TownSuite.CodeSigning.Service
     public class SignerDetached : ISigner
     {
         readonly Settings _settings;
-        StringBuilder msg = new StringBuilder();
+        readonly StringBuilder msg = new StringBuilder();
+
+        // openssl's stdout and stderr are drained on two separate threadpool threads, so every
+        // touch of msg has to be synchronized. StringBuilder is not thread-safe: concurrent
+        // appends corrupt its internal chunk list and throw "Destination is too short" out of
+        // AsyncStreamReader, which rethrows on a threadpool thread and takes the process down.
+        readonly object _msgLock = new object();
 
         readonly ILogger _logger;
         public SignerDetached(Settings settings, ILogger logger)
@@ -18,9 +24,37 @@ namespace TownSuite.CodeSigning.Service
             _logger = logger;
         }
 
+        private void AppendMessage(string line)
+        {
+            lock (_msgLock)
+            {
+                msg.AppendLine(line);
+            }
+        }
+
+        private string MessageSnapshot()
+        {
+            lock (_msgLock)
+            {
+                return msg.ToString();
+            }
+        }
+
+        private void KillProcess(System.Diagnostics.Process p, string toolName)
+        {
+            try
+            {
+                p.Kill(entireProcessTree: true);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, $"{toolName} process exit failure");
+            }
+        }
+
         public async Task<(bool IsSigned, string Message)> SignAsync(string workingDir, string[] files)
         {
-            var _cancellationToken = new CancellationTokenSource(_settings.SigntoolTimeoutInMs * files.Length).Token;
+            using var timeout = new CancellationTokenSource(_settings.SigntoolTimeoutInMs * files.Length);
 
             foreach (var file in files)
             {
@@ -53,37 +87,34 @@ namespace TownSuite.CodeSigning.Service
                 p.BeginErrorReadLine();
                 p.BeginOutputReadLine();
 
-                await p.WaitForExitAsync(_cancellationToken);
-
-                if (_cancellationToken.IsCancellationRequested)
+                try
                 {
-                    msg.AppendLine("openssl timeout reached. Cancelling code signing attempt.");
-                    _logger.LogWarning(msg.ToString());
-                    try
-                    {
-                        p.Kill();
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "openssl process exit failure");
-                    }
+                    await p.WaitForExitAsync(timeout.Token);
+                }
+                catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+                {
+                    // WaitForExitAsync throws on cancellation, so the kill has to happen here.
+                    // Without it a wedged openssl is left running and its handles leak.
+                    AppendMessage("openssl timeout reached. Cancelling code signing attempt.");
+                    _logger.LogWarning(MessageSnapshot());
+                    KillProcess(p, "openssl");
 
-                    return (false, msg.ToString());
+                    return (false, MessageSnapshot());
                 }
 
                 // TODO: determine if openssl was successful based on exit code and/or output, and return false if it was not successful.
                 // For now we will return true regardless of the exit code, as long as the process completed within the timeout,
                 // and log the exit code and output for debugging purposes.
-                _logger.LogInformation($"OpensslInternal ExitCode: {p.ExitCode}, Message: {msg.ToString()}");
+                _logger.LogInformation($"OpensslInternal ExitCode: {p.ExitCode}, Message: {MessageSnapshot()}");
             }
 
-            await TimeStamp(workingDir, files, _cancellationToken);
+            await TimeStamp(workingDir, files, timeout);
 
             CleanupOriginalFiles(workingDir, files);
-            return (true, msg.ToString());
+            return (true, MessageSnapshot());
         }
 
-        private async Task TimeStamp(string workingDir, string[] files, CancellationToken _cancellationToken)
+        private async Task TimeStamp(string workingDir, string[] files, CancellationTokenSource timeout)
         {
             if (string.IsNullOrWhiteSpace(_settings.OpenSSL.OsslSignCodePath) || string.IsNullOrWhiteSpace(_settings.OpenSSL.TimestampOptions))
             {
@@ -114,22 +145,26 @@ namespace TownSuite.CodeSigning.Service
                 p.BeginErrorReadLine();
                 p.BeginOutputReadLine();
 
-                await p.WaitForExitAsync(_cancellationToken);
-
-                if (_cancellationToken.IsCancellationRequested)
+                try
                 {
-                    msg.AppendLine("Opensslsigntool timeout reached. Cancelling code signing attempt.");
-                    _logger.LogWarning(msg.ToString());
-                    try
-                    {
-                        p.Kill();
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Opensslsigntool process exit failure");
-                    }
+                    await p.WaitForExitAsync(timeout.Token);
                 }
-                _logger.LogInformation($"Opensslsigntool Internal ExitCode: {p.ExitCode}, Message: {msg.ToString()}");
+                catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+                {
+                    // WaitForExitAsync throws on cancellation, so the kill has to happen here.
+                    // Without it a wedged osslsigncode is left running and its handles leak.
+                    AppendMessage("Opensslsigntool timeout reached. Cancelling code signing attempt.");
+                    _logger.LogWarning(MessageSnapshot());
+                    KillProcess(p, "Opensslsigntool");
+
+                    // The timeout budget is shared across every file, so once it fires there is no
+                    // point starting the next one: its WaitForExitAsync would fail immediately.
+                    // Returning here also avoids reading p.ExitCode on a process that may not have
+                    // exited, which throws InvalidOperationException.
+                    return;
+                }
+
+                _logger.LogInformation($"Opensslsigntool Internal ExitCode: {p.ExitCode}, Message: {MessageSnapshot()}");
             }
         }
 
@@ -180,7 +215,7 @@ namespace TownSuite.CodeSigning.Service
         {
             if (e.Data != null)
             {
-                msg.AppendLine($"OpensslInternal StandardError: {e.Data}");
+                AppendMessage($"OpensslInternal StandardError: {e.Data}");
             }
         }
 
@@ -188,7 +223,7 @@ namespace TownSuite.CodeSigning.Service
         {
             if (e.Data != null)
             {
-                msg.AppendLine($"OpensslInternal StandardOutput: {e.Data}");
+                AppendMessage($"OpensslInternal StandardOutput: {e.Data}");
             }
         }
 
