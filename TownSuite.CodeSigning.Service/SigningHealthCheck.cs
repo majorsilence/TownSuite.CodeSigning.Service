@@ -28,6 +28,16 @@ namespace TownSuite.CodeSigning.Service
         /// </summary>
         private const int StaleAfterIntervals = 3;
 
+        /// <summary>
+        /// Working folder for the canary, directly under the batch temp folder. Unlike a batch job
+        /// folder this one is long lived and reused by every canary run, so <see cref="CleanerService"/>
+        /// must leave it alone and <see cref="StatusService"/> must not count it as a pending job.
+        /// </summary>
+        public const string CanaryFolderName = "healthcheck";
+
+        public static string CanaryFolderPath =>
+            Path.Combine(BatchedSigning.GetTempFolder(), CanaryFolderName);
+
         private readonly Settings _settings;
         private readonly ILogger _logger;
         private readonly BackgroundQueue _queue;
@@ -161,7 +171,7 @@ namespace TownSuite.CodeSigning.Service
 
         private async Task<HealthCheckResult> RunSignCanaryAsync()
         {
-            var workingFolder = new DirectoryInfo(Path.Combine(BatchedSigning.GetTempFolder(), "healthcheck"));
+            var workingFolder = new DirectoryInfo(CanaryFolderPath);
             var canaryPath = Path.Combine(workingFolder.FullName, $"healthcheck-{Guid.NewGuid()}.dll");
             try
             {

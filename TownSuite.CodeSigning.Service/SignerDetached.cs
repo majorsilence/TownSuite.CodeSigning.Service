@@ -9,13 +9,35 @@ namespace TownSuite.CodeSigning.Service
     public class SignerDetached : ISigner
     {
         readonly Settings _settings;
-        StringBuilder msg = new StringBuilder();
+        readonly StringBuilder msg = new StringBuilder();
+
+        // openssl's stdout and stderr are drained on two separate threadpool threads, so every
+        // touch of msg has to be synchronized. StringBuilder is not thread-safe: concurrent
+        // appends corrupt its internal chunk list and throw "Destination is too short" out of
+        // AsyncStreamReader, which rethrows on a threadpool thread and takes the process down.
+        readonly object _msgLock = new object();
 
         readonly ILogger _logger;
         public SignerDetached(Settings settings, ILogger logger)
         {
             _settings = settings;
             _logger = logger;
+        }
+
+        private void AppendMessage(string line)
+        {
+            lock (_msgLock)
+            {
+                msg.AppendLine(line);
+            }
+        }
+
+        private string MessageSnapshot()
+        {
+            lock (_msgLock)
+            {
+                return msg.ToString();
+            }
         }
 
         public async Task<(bool IsSigned, string Message)> SignAsync(string workingDir, string[] files)
@@ -57,8 +79,8 @@ namespace TownSuite.CodeSigning.Service
 
                 if (_cancellationToken.IsCancellationRequested)
                 {
-                    msg.AppendLine("openssl timeout reached. Cancelling code signing attempt.");
-                    _logger.LogWarning(msg.ToString());
+                    AppendMessage("openssl timeout reached. Cancelling code signing attempt.");
+                    _logger.LogWarning(MessageSnapshot());
                     try
                     {
                         p.Kill();
@@ -68,19 +90,19 @@ namespace TownSuite.CodeSigning.Service
                         _logger.LogWarning(ex, "openssl process exit failure");
                     }
 
-                    return (false, msg.ToString());
+                    return (false, MessageSnapshot());
                 }
 
                 // TODO: determine if openssl was successful based on exit code and/or output, and return false if it was not successful.
                 // For now we will return true regardless of the exit code, as long as the process completed within the timeout,
                 // and log the exit code and output for debugging purposes.
-                _logger.LogInformation($"OpensslInternal ExitCode: {p.ExitCode}, Message: {msg.ToString()}");
+                _logger.LogInformation($"OpensslInternal ExitCode: {p.ExitCode}, Message: {MessageSnapshot()}");
             }
 
             await TimeStamp(workingDir, files, _cancellationToken);
 
             CleanupOriginalFiles(workingDir, files);
-            return (true, msg.ToString());
+            return (true, MessageSnapshot());
         }
 
         private async Task TimeStamp(string workingDir, string[] files, CancellationToken _cancellationToken)
@@ -118,8 +140,8 @@ namespace TownSuite.CodeSigning.Service
 
                 if (_cancellationToken.IsCancellationRequested)
                 {
-                    msg.AppendLine("Opensslsigntool timeout reached. Cancelling code signing attempt.");
-                    _logger.LogWarning(msg.ToString());
+                    AppendMessage("Opensslsigntool timeout reached. Cancelling code signing attempt.");
+                    _logger.LogWarning(MessageSnapshot());
                     try
                     {
                         p.Kill();
@@ -129,7 +151,7 @@ namespace TownSuite.CodeSigning.Service
                         _logger.LogWarning(ex, "Opensslsigntool process exit failure");
                     }
                 }
-                _logger.LogInformation($"Opensslsigntool Internal ExitCode: {p.ExitCode}, Message: {msg.ToString()}");
+                _logger.LogInformation($"Opensslsigntool Internal ExitCode: {p.ExitCode}, Message: {MessageSnapshot()}");
             }
         }
 
@@ -180,7 +202,7 @@ namespace TownSuite.CodeSigning.Service
         {
             if (e.Data != null)
             {
-                msg.AppendLine($"OpensslInternal StandardError: {e.Data}");
+                AppendMessage($"OpensslInternal StandardError: {e.Data}");
             }
         }
 
@@ -188,7 +210,7 @@ namespace TownSuite.CodeSigning.Service
         {
             if (e.Data != null)
             {
-                msg.AppendLine($"OpensslInternal StandardOutput: {e.Data}");
+                AppendMessage($"OpensslInternal StandardOutput: {e.Data}");
             }
         }
 

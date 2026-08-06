@@ -281,7 +281,7 @@ namespace TownSuite.CodeSigning.Service
             try
             {
                 pendingJobFolders = Directory.Exists(tempFolder)
-                    ? Directory.EnumerateDirectories(tempFolder).Count(d => !string.Equals(Path.GetFileName(d), "healthcheck", StringComparison.OrdinalIgnoreCase))
+                    ? Directory.EnumerateDirectories(tempFolder).Count(d => !string.Equals(Path.GetFileName(d), SigningHealthCheck.CanaryFolderName, StringComparison.OrdinalIgnoreCase))
                     : 0;
             }
             catch (Exception ex)
