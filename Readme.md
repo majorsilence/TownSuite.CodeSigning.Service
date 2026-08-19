@@ -249,8 +249,17 @@ openssl req -x509 -nodes -key server.key -out server.crt -days 365 -nodes -subj 
 ### create a detached signature
 
 ```bash
-open cms -sign -in "{FilePath}" -signer "/path/to/server.crt" -inkey "/path/to/server.key" -keyform P12 -passin pass:password -out "{FilePath}.sig" -outform DER -md sha256
+openssl cms -sign -in "{FilePath}" -signer "/path/to/server.crt" -inkey "/path/to/server.key" -keyform P12 -passin pass:password -out "{FilePath}.sig" -outform DER -md sha256 -binary
 ```
+
+`-binary` is required. Without it OpenSSL treats the input as S/MIME text and rewrites every line
+ending to CRLF before computing the digest, so the signature covers the canonicalized form rather
+than the bytes on disk. That is OpenSSL behaviour, not OS behaviour - it happens identically on
+Windows and Linux. It only goes unnoticed when the input already uses CRLF throughout; for LF text
+and for any binary (zip, dll, exe, msi) the resulting `.sig` does not match the file being shipped.
+
+`-binary` must be used on **both** sides. Signatures issued before this flag was added verify only
+*without* `-binary`; signatures issued after it verify only *with* it.
 
 ### Timestamp a detached signature
 
@@ -282,4 +291,7 @@ openssl pkcs12 -in "server.pfx" -nokeys -out "server.cer"
 ```bash
 openssl cms -verify -binary -inform DER -in archive.zip.sig -content archive.zip -CAfile server.cer > /dev/null
 ```
+
+The `-binary` here must match the flag used at signing time (see above), otherwise the digest is
+computed over differently canonicalized bytes and verification fails.
 

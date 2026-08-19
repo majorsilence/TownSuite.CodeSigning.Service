@@ -36,7 +36,7 @@ namespace TownSuite.CodeSigning.Tests
                 OpenSSL = new OpenSSLSettings()
                 {
                     OpenSslPath = Environment.GetEnvironmentVariable("OPENSSL_PATH") ?? "openssl",
-                    OpenSslOptions = "cms -sign -in \"{FilePath}\" -signer \"{BaseDirectory}testcert.crt\" -inkey \"{BaseDirectory}testcert.key\" -keyform P12 -passin pass:password -outform DER -out \"{FilePath}.sig\" -md sha256",
+                    OpenSslOptions = "cms -sign -in \"{FilePath}\" -signer \"{BaseDirectory}testcert.crt\" -inkey \"{BaseDirectory}testcert.key\" -keyform P12 -passin pass:password -outform DER -out \"{FilePath}.sig\" -md sha256 -binary",
                     OpenSslTimeoutInMs = 30000,
                     OsslSignCodePath = "osslsigncode",
                     TimestampOptions = "add -t \"http://timestamp.digicert.com\" -in \"{FilePath}.sig\" -out \"{FilePath}.timestamped.sig\""

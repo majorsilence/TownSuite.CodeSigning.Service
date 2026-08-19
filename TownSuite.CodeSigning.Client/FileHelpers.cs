@@ -199,19 +199,18 @@ public static class FileHelpers
     }
 
     /// <summary>
-    /// Checks that a detached signature file is a structurally valid CMS SignedData blob
-    /// carrying a signer and an embedded certificate - the certificate lives in this side-by-side
-    /// .sig file, never in the original dll/exe/zip.
+    /// Verifies that a detached signature actually covers the bytes of the original file. The
+    /// signing certificate lives in this side-by-side .sig file, never in the original dll/exe/zip.
     ///
-    /// This is a structural check only, not a content-hash verification. The signing service's
-    /// OpenSSL invocation signs without "-binary", so it applies S/MIME text canonicalization
-    /// (CRLF normalization) to the content before hashing. Recomputing that transform here to
-    /// verify the digest would mean reimplementing OpenSSL's canonicalization byte-for-byte in
-    /// .NET; probing it directly showed it does not survive a clean round-trip for arbitrary
-    /// binary content (e.g. embedded NUL bytes were lost), so a from-scratch reimplementation
-    /// cannot be trusted not to reject legitimately signed files. As a result this check catches
-    /// a missing, empty, or corrupt .sig, but will not detect a structurally valid signature that
-    /// was produced over different content.
+    /// The service signs with OpenSSL's "-binary" flag, so the digest is computed over the content
+    /// exactly as it sits on disk. That is what makes a byte-exact check possible here: any
+    /// difference in content - including a line-ending rewrite somewhere in the pipeline - is
+    /// rejected. Without "-binary" openssl digests a CRLF-canonicalized copy instead, which is why
+    /// this check used to be structural-only.
+    ///
+    /// Scope: verifySignatureOnly means this proves integrity, not trust. It confirms the signature
+    /// was made over this exact content by the certificate embedded in the .sig; it does not build
+    /// a chain to a trusted root, so on its own it does not establish who the signer is.
     /// </summary>
     public static bool HasValidDetachedSignature(string originalFilePath, string signatureFilePath)
     {
@@ -233,7 +232,14 @@ public static class FileHelpers
             var signedCms = new SignedCms(contentInfo, detached: true);
             signedCms.Decode(signatureBytes);
 
-            return signedCms.SignerInfos.Count > 0 && signedCms.Certificates.Count > 0;
+            if (signedCms.SignerInfos.Count == 0 || signedCms.Certificates.Count == 0)
+            {
+                return false;
+            }
+
+            // Throws if the digest does not match originalBytes.
+            signedCms.CheckSignature(verifySignatureOnly: true);
+            return true;
         }
         catch (Exception)
         {

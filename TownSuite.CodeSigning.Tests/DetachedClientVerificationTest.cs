@@ -1,4 +1,4 @@
-using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Logging;
 using TownSuite.CodeSigning.Service;
 
 namespace TownSuite.CodeSigning.Tests
@@ -6,10 +6,10 @@ namespace TownSuite.CodeSigning.Tests
     /// <summary>
     /// End-to-end compatibility test between the service's detached signing (real openssl
     /// invocation via SignerDetached) and the client's post-download verification
-    /// (FileHelpers.HasValidDetachedSignature). Guards against the client rejecting
-    /// signatures the service legitimately produced - openssl signs without "-binary",
-    /// so its digest is computed over S/MIME-canonicalized content, which is why the
-    /// client check must stay structural rather than byte-exact.
+    /// (FileHelpers.HasValidDetachedSignature). Proves the two agree byte-exactly: openssl signs
+    /// with "-binary", so the digest covers the file as it sits on disk and the client can verify
+    /// it directly. Drop that flag and openssl digests a CRLF-canonicalized copy instead, and this
+    /// test fails - which is the point of it.
     /// </summary>
     [TestFixture]
     public class DetachedClientVerificationTest

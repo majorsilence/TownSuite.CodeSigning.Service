@@ -310,13 +310,12 @@ namespace TownSuite.CodeSigning.ClientTests
         }
 
         [Test]
-        public void HasValidDetachedSignature_ReturnsTrue_EvenForMismatchedContent_ByDesign()
+        public void HasValidDetachedSignature_ReturnsFalse_ForMismatchedContent()
         {
-            // This is a structural check only (SignerInfo + embedded cert present), not a content
-            // hash verification - see the HasValidDetachedSignature doc comment for why: the
-            // signing service signs without OpenSSL's "-binary" flag, so the real digest is
-            // computed over S/MIME-canonicalized content the client cannot safely reproduce.
-            // Documenting this here so the tradeoff isn't rediscovered as a "bug" later.
+            // The service signs with OpenSSL's "-binary" flag, so the digest covers the raw bytes
+            // and the client can reject a signature made over different content. This check was
+            // structural-only while signing happened without "-binary", because the digest then
+            // covered a CRLF-canonicalized copy that could not be reproduced here.
             byte[] signedContent = { 9, 9, 9 };
             string original = Path.Combine(_tempDir, "orig.bin");
             File.WriteAllBytes(original, new byte[] { 1, 2, 3 }); // different content than what was signed
@@ -324,6 +323,26 @@ namespace TownSuite.CodeSigning.ClientTests
             string sigPath = original + ".sig";
             File.WriteAllBytes(sigPath, SignDetached(signedContent));
 
+            Assert.IsFalse(FileHelpers.HasValidDetachedSignature(original, sigPath));
+        }
+
+        [Test]
+        public void HasValidDetachedSignature_ReturnsFalse_WhenLineEndingsWereRewritten()
+        {
+            // Direct guard for the manifest bug: a signature over the LF form must not validate
+            // against the CRLF form of the same text, and vice versa.
+            byte[] lf = System.Text.Encoding.UTF8.GetBytes("line1\nline2\n");
+            byte[] crlf = System.Text.Encoding.UTF8.GetBytes("line1\r\nline2\r\n");
+
+            string original = Path.Combine(_tempDir, "manifest.txt");
+            File.WriteAllBytes(original, crlf);
+
+            string sigPath = original + ".sig";
+            File.WriteAllBytes(sigPath, SignDetached(lf));
+
+            Assert.IsFalse(FileHelpers.HasValidDetachedSignature(original, sigPath));
+
+            File.WriteAllBytes(original, lf);
             Assert.IsTrue(FileHelpers.HasValidDetachedSignature(original, sigPath));
         }
     }
